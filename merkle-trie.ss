@@ -18,7 +18,7 @@
   .validate: (.@ Digest .validate)
   .sexp<-: (.@ Digest .sexp<-)
   .marshal: (.@ Digest .marshal)
-  .unmarshal: (.@ Digest .marshal)
+  .unmarshal: (.@ Digest .unmarshal)
   .bytes<-: (.@ Digest .bytes<-)
   .<-bytes: (.@ Digest .<-bytes)
   .json<-: (.@ Digest .json<-)

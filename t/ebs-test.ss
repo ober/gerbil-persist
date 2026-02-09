@@ -22,10 +22,10 @@
       {commit-transaction K}
       {begin-transaction K}
       (check-equal? (load-content-addressed-bytes K C h) data)
-      (check-exception (load-intent-addressed-bytes K C intent) DbError?)
+      (check-exception (load-intent-addressed-bytes K C intent true) DbError?)
       (check-equal? (store-intent-addressed-bytes K C intent data) (void))
       {commit-transaction K}
       {begin-transaction K}
-      (check-equal? (load-intent-addressed-bytes K C intent) data)
+      (check-equal? (load-intent-addressed-bytes K C intent true) data)
       {commit-transaction K}
       (void))))

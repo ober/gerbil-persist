@@ -71,7 +71,10 @@
     (def value (encrypt iv bytes))
     {write-key kvs key (u8vector-append iv value)}))
 
-(def (load-intent-addressed-bytes kvs crypt-ctx intent (valid? true))
+;; NB: valid? is required (no default) to force callers to explicitly consider
+;; integrity validation. Without AEAD, the decrypted data has no authentication;
+;; pass `true` if no validation is needed, or provide a domain-specific check.
+(def (load-intent-addressed-bytes kvs crypt-ctx intent valid?)
   (with ((EncryptionContext _ decrypt iv-len _ _ _ derive-ia-key) crypt-ctx)
     (def key (derive-ia-key intent))
     {read-decode-check-key

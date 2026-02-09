@@ -31,21 +31,36 @@
     (def blocked-transactions []) ;; (List Transaction)
     (def open-transactions (make-hash-table)) ;; mutable (HashSet Transaction)
     (def pending-transactions []) ;; (List Transaction)
-    (def cache (make-hash-table)) ;; mutable (Table Bytes <- Bytes)
     (def batch-id 0) ;; Nat
+    (def batch []) ;; (List ['put Key Value] | ['delete Key])
     (def batch-completion (make-completion '(db-batch 0)))
     (def ready? #t) ;; Bool
     (def triggered? #f) ;; Bool
-    (def manager true #;(db-manager self)) ;; Thread
     (def timer #f) ;; (Or Thread '#f)
     (struct-instance-init!
-     self name kvs mx txcounter
+     self kvs name mx txcounter
      blocked-transactions open-transactions pending-transactions hooks
-     cache batch-id batch-completion manager timer
-     ready? triggered?)))
+     batch-id batch batch-completion #f timer
+     ready? triggered?)
+    (set! (KvsMux-manager self) (db-manager self))))
 
 (def (open-db-connection name . opts) (apply make-KvsMux name opts))
 (def (open-db-connection! name . opts) (current-db-connection (apply open-db-connection name opts)))
+(def (close-db-connection! c) {close c})
+(def (call-with-db-connection fun name . opts)
+  (def c (apply open-db-connection name opts))
+  (try
+   (parameterize ((current-db-connection c))
+     (fun c))
+   (finally {close c})))
+(defrule (with-db-connection (c name ...) body ...)
+  (call-with-db-connection (lambda (c) body ...) name ...))
+(def (ensure-db-connection name)
+  (def c (current-db-connection))
+  (if c
+    (assert! (equal? (KvsMux-name c) name))
+    (open-db-connection! name)))
+
 (defrules with-db-lock ()
   ((_ (km) body ...) (with-lock (KvsMux-mx km) (lambda () body ...)))
   ((_ () body ...) (with-db-lock (current-db-connection) body ...)))
@@ -86,13 +101,13 @@
 ;; when it's done, wakeup the wait-on-batch-commit completion
 (def (finalize-batch! c)
   (def batch-id (KvsMux-batch-id c))
-  (def batch (KvsMux-batch c))
+  (def batch (reverse (KvsMux-batch c))) ;; reverse to get operations in order
   (def batch-completion (KvsMux-batch-completion c))
   (def hooks (hash-values (KvsMux-hooks c)))
   (def blocked-transactions (KvsMux-blocked-transactions c))
   (def pending-transactions (KvsMux-pending-transactions c))
   (set! (KvsMux-batch-id c) (1+ batch-id))
-  #;(set! (KvsMux-batch c) (leveldb-writebatch)) ;; open
+  (set! (KvsMux-batch c) []) ;; reset batch for next wave
   (set! (KvsMux-batch-completion c) (make-completion `(db-batch , (KvsMux-batch-id c))))
   (set! (KvsMux-pending-transactions c) [])
   (set! (KvsMux-blocked-transactions c) [])
@@ -104,20 +119,6 @@
               (hash-put! (KvsMux-open-transactions c) (KvsMuxTx-txid tx) tx))
             blocked-transactions)
   (thread-send (KvsMux-manager c) [batch-id batch batch-completion hooks pending-transactions]))
-
-;;(def (call-with-db fun name)
-;;  (def c (open-db-connection name))
-;;  (try
-;;   (parameterize ((current-db-connection c))
-;;     (fun c))
-;;   (finally (close-db-connection c))))
-;;(defrule (with-db-connection (c name ...) body ...)
-;;  (call-with-db-connection (lambda (c) body ...) name ...))
-;;(def (ensure-db-connection name)
-;;  (def c (current-db-connection))
-;;  (if c
-;;    (assert! (equal? (KvsMux-name c) name))
-;;    (open-db-connection! name)))
 
 ;; 50-100 transactions per second is about what we expect on a typical disk.
 ;; : Real
@@ -182,7 +183,7 @@
 ;; * Return the result of the inner expression, after the transaction is closed but not committed.
 ;;   If you need to synchronize on the transaction, be sure to return it or otherwise memorize it,
 ;;   or use after-commit from within the body.
-(def (call-with-tx fun km wait: (wait #f))
+(def (call-with-tx fun (km #f) wait: (wait #f))
   (awhen (t (current-db-transaction))
     (error "Cannot nest transactions" t))
   (def tx {begin-transaction (or km (current-db-connection))})
@@ -247,8 +248,14 @@
      (let loop ()
        (match (thread-receive)
          ([batch-id batch batch-completion hooks pending-transactions]
-          ;; TODO: run the leveldb-write in a different OS thread.
-          #;(leveldb-write (KvsMux-kvs c) batch leveldb-sync-write-options)
+          ;; Only open a KVS transaction if there are operations to replay
+          (when (pair? batch)
+            (let (kvs (KvsMux-kvs c))
+              {begin-transaction kvs}
+              (for-each (match <> (['put k v] {write-key kvs k v})
+                                (['delete k] {delete-key kvs k}))
+                        batch)
+              {commit-transaction kvs}))
           (for-each (lambda (tx) (set! (KvsMuxTx-status tx) 'complete))
                     pending-transactions)
           (for-each (lambda (hook) (hook batch-id)) hooks)
@@ -259,10 +266,38 @@
               (set! (KvsMux-ready? c) #t)))
           (loop))
          (#f (void))
-         (x (error "foo" x)))))))
+         (x (error "db-manager: unexpected message" x)))))))
 
 ;; Get the batch id: not just for testing,
 ;; but also, within a transaction, to get the id to prepare a hook,
 ;; e.g. to send newly committed but previously unsent messages.
 (def (get-batch-id (c (current-db-connection)))
   (KvsMux-batch-id c))
+
+;; Read a value from the underlying KVS (sees committed state, not pending writes).
+(def (db-get key (tx (current-db-transaction)))
+  (defvalues (value present?) {read-key (KvsMux-kvs (KvsMuxTx-km tx)) key})
+  (and present? value))
+
+;; Check if a key exists in the underlying KVS.
+(def (db-key? key (tx (current-db-transaction)))
+  (defvalues (_ present?) {read-key (KvsMux-kvs (KvsMuxTx-km tx)) key})
+  present?)
+
+;; Add a put operation to the current batch.
+(def (db-put! k v (tx (current-db-transaction)))
+  (def c (KvsMuxTx-km tx))
+  (with-db-lock (c)
+    (push! ['put k v] (KvsMux-batch c))))
+
+;; Add multiple put operations to the current batch.
+(def (db-put-many! l (tx (current-db-transaction)))
+  (def c (KvsMuxTx-km tx))
+  (with-db-lock (c)
+    (for-each (match <> ([k . v] (push! ['put k v] (KvsMux-batch c)))) l)))
+
+;; Add a delete operation to the current batch.
+(def (db-delete! k (tx (current-db-transaction)))
+  (def c (KvsMuxTx-km tx))
+  (with-db-lock (c)
+    (push! ['delete k] (KvsMux-batch c))))

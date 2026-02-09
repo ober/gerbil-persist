@@ -22,9 +22,9 @@
     (def connection (apply sql-connect args))
     (sql-eval connection (string-append
                           "CREATE TABLE IF NOT EXISTS kvs ( "
-                          "key BLOB, "
-                          "value BLOB NOT NULL, "
-                          "PRIMARY KEY (key)) ;"))
+                          "key BYTEA, "
+                          "value BYTEA NOT NULL, "
+                          "PRIMARY KEY (key))"))
     (struct-instance-init!
      self connection
      (sql-prepare connection "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE, READ WRITE")

@@ -316,7 +316,7 @@
         (set! (persistent-variable-loaded? pvar) #t)
         (set! (persistent-variable-value pvar) val)))))
 (def (%make-persistent-variable name type key initial-value)
-  (make-persistent-variable (make-mutex 'name) type (ensure-db-key key) initial-value #f))
+  (make-persistent-variable (make-mutex name) type (ensure-db-key key) initial-value #f))
 (defsyntax (define-persistent-variable stx)
   (syntax-case stx ()
     ((d name type key initial-value)

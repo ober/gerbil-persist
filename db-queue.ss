@@ -123,7 +123,6 @@
 ;; : <- DbQueue Bytes TX
 (def (DbCommittedQueue-send! q msg tx)
   (%DbQueue-send! q msg tx)
-  (%DbQueue-update q tx)
   (%DbCommittedQueue-update-pending q tx))
 
 ;; Pop a message from a DbCommittedQueue

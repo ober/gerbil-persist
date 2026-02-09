@@ -19,6 +19,16 @@
   (lambda (self connection begin-tx-stmt commit-tx-stmt abort-tx-stmt read-stmt write-stmt delete-stmt)
     (struct-instance-init! self connection begin-tx-stmt commit-tx-stmt abort-tx-stmt read-stmt write-stmt delete-stmt)))
 
+(defmethod {close KvsSql}
+  (lambda (self)
+    (sql-finalize (KvsSql-begin-tx-stmt self))
+    (sql-finalize (KvsSql-commit-tx-stmt self))
+    (sql-finalize (KvsSql-abort-tx-stmt self))
+    (sql-finalize (KvsSql-read-stmt self))
+    (sql-finalize (KvsSql-write-stmt self))
+    (sql-finalize (KvsSql-delete-stmt self))
+    (sql-close (Kvs-connection self))))
+
 (defmethod {begin-transaction KvsSql} (lambda (self) (sql-exec (KvsSql-begin-tx-stmt self))))
 (defmethod {abort-transaction KvsSql} (lambda (self) (sql-exec (KvsSql-abort-tx-stmt self))))
 (defmethod {commit-transaction KvsSql} (lambda (self) (sql-exec (KvsSql-commit-tx-stmt self))))
